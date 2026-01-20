@@ -48,8 +48,9 @@ app.use(express.json());
 app.use(cors());
 
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
-console.log("My MongoDB URI is:", process.env.MONGODB_URI);
-const uri = process.env.MONGODB_URI;
+const rawUri = process.env.MONGODB_URI || "";
+const uri = rawUri.replace(/["';]/g, "").trim(); 
+
 const client = new MongoClient(uri, {
   serverApi: {
     version: ServerApiVersion.v1,
