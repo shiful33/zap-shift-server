@@ -1,7 +1,9 @@
+require("dotenv").config();
 const express = require("express");
 const cors = require("cors");
 const app = express();
 const { MongoClient, ServerApiVersion, ObjectId } = require("mongodb");
+
 // Stripe
 const stripe = require("stripe")(process.env.STRIPE_SECRET_KEY);
 
@@ -10,13 +12,27 @@ const port = process.env.PORT || 3000;
 // firebase Admin
 const admin = require("firebase-admin");
 
-// const serviceAccount = require("./firebase-admin-key.json");
-const decoded = Buffer.from(process.env.FB_SERVICE_KEY, 'base64').toString('utf8')
-const serviceAccount = JSON.parse(decoded);
+try {
+  let serviceAccount;
 
-admin.initializeApp({
-  credential: admin.credential.cert(serviceAccount),
-});
+  if (process.env.NODE_ENV === "production") {
+    const decoded = Buffer.from(process.env.FB_SERVICE_KEY, "base64").toString(
+      "utf8",
+    );
+    serviceAccount = JSON.parse(decoded.replace(/\\n/g, "\n"));
+  } else {
+    serviceAccount = require("./zap-shift-firebase-adminsdk.json");
+  }
+
+  if (!admin.apps.length) {
+    admin.initializeApp({
+      credential: admin.credential.cert(serviceAccount),
+    });
+    console.log("✅ Firebase Admin Initialized!");
+  }
+} catch (error) {
+  console.error("❌ Firebase Initialization Error:", error.message);
+}
 
 const crypto = require("crypto");
 const { hasUncaughtExceptionCaptureCallback } = require("process");
@@ -31,28 +47,8 @@ function generateTrackingId() {
 app.use(express.json());
 app.use(cors());
 
-/* const verifyFBToken = async (req, res, next) => {
-    
-    const token = req.headers.authorization;
-
-    if (!token) {
-      return res.status(401).send({message: 'unauthorized access'})
-    }
-
-    try {
-      const idToken = token.split(' ')[1];
-      const decoded = await admin.auth().verifyIdToken(idToken);
-      console.log('decoded in the token', decoded)
-      req.decoded_email = decoded.email;
-      next();
-    }
-    catch (err) {
-      return res.status(401).send({ message: 'unauthorized access' })
-    }
-} */
-
-
 // Create a MongoClient with a MongoClientOptions object to set the Stable API version
+console.log("My MongoDB URI is:", process.env.MONGODB_URI);
 const uri = process.env.MONGODB_URI;
 const client = new MongoClient(uri, {
   serverApi: {
@@ -85,8 +81,7 @@ async function run() {
       next();
     };
 
-
-     // middleware more with database access for verifyRider
+    // middleware more with database access for verifyRider
     const verifyRider = async (req, res, next) => {
       const email = req.decoded_email;
       const query = { email };
@@ -102,12 +97,12 @@ async function run() {
       const log = {
         trackingId,
         status,
-        details: status.split('').join(' '),
-        createdAt: new Date()
-      }
+        details: status.split("").join(" "),
+        createdAt: new Date(),
+      };
       const result = await trackingsCollection.insertOne(log);
       return result;
-    }
+    };
 
     // Users related api
     app.get("users", async (req, res) => {
@@ -149,7 +144,7 @@ async function run() {
       }
 
       const result = await userCollection.insertOne(user);
-      express.send(result);
+      res.send(result);
     });
 
     app.patch("/users/:id/role", async (req, res) => {
@@ -165,7 +160,6 @@ async function run() {
       res.send(result);
     });
 
-
     // Parcel Api
     app.get("/parcels", async (req, res) => {
       const query = {};
@@ -179,7 +173,7 @@ async function run() {
         query.deliveryStatus = deliveryStatus;
       }
 
-      const options = { sort: { createAt: -1 } };
+      const options = { sort: { createdAt: -1 } };
 
       const cursor = parcelsCollection.find(query, options);
       const result = await cursor.toArray();
@@ -194,11 +188,10 @@ async function run() {
         query.riderEmail = riderEmail;
       }
 
-      if (deliveryStatus !== 'parcel_delivery') {
+      if (deliveryStatus !== "parcel_delivery") {
         // query.deliveryStatus = { $in:[ "driver_assigned", "parcel_delivered"] };
-        query.deliveryStatus = { $nin: ['parcel_delivered'] }
-      }
-      else {
+        query.deliveryStatus = { $nin: ["parcel_delivered"] };
+      } else {
         query.deliveryStatus = deliveryStatus;
       }
 
@@ -226,7 +219,7 @@ async function run() {
         };
         const riderResult = await ridersCollection.updateOne(
           riderQuery,
-          riderUpdateDoc
+          riderUpdateDoc,
         );
       }
 
@@ -246,31 +239,30 @@ async function run() {
       res.send(result);
     });
 
-
     // MongoDB Aggregation & Pipeline
-    app.get('/parcels/delivery-status/stats', async (req, res) => {
+    app.get("/parcels/delivery-status/stats", async (req, res) => {
       const pipeline = [
         {
           $group: {
-            _id: '$deliveryStatus',
-            count: { $sum: 1 }
-          }
-        }
-      ]
+            _id: "$deliveryStatus",
+            count: { $sum: 1 },
+          },
+        },
+      ];
       const result = await parcelsCollection.aggregate(pipeline).toArray();
       res.send(result);
-    })
+    });
 
     // Parcel Post
     app.post("/parcels", async (req, res) => {
       const parcel = req.body;
-      // Parcel created time
+      const tId = generateTrackingId();
+
       parcel.createdAt = new Date();
-      parcel.trackingId = trackingId;
+      parcel.trackingId = tId;
 
       const result = await parcelsCollection.insertOne(parcel);
-
-      logTracking(trackingId, 'parcel_created');
+      await logTracking(tId, "parcel_created");
 
       res.send(result);
     });
@@ -299,11 +291,11 @@ async function run() {
       };
       const riderResult = await ridersCollection.updateOne(
         riderQuery,
-        riderUpdateDoc
+        riderUpdateDoc,
       );
 
       // Log tracking
-      logTracking(trackingId, 'driver_assigned')
+      logTracking(trackingId, "driver_assigned");
 
       res.send(riderResult);
     });
@@ -338,7 +330,7 @@ async function run() {
         metadata: {
           parcelId: paymentInfo.parcelId,
           parcelName: paymentInfo.parcelName,
-          trackingId: paymentInfo.trackingId
+          trackingId: paymentInfo.trackingId,
         },
 
         customer_email: paymentInfo.senderEmail,
@@ -363,7 +355,7 @@ async function run() {
         const update = {
           $set: {
             paymentStatus: "paid",
-            deliveryStatus: "pending-pickup"
+            deliveryStatus: "pending-pickup",
           },
         };
 
@@ -382,7 +374,7 @@ async function run() {
         if (session.payment_status === "paid") {
           const resultPayment = await paymentCollection.insertOne(payment);
 
-          logTracking(trackingId, 'pending-pickup')
+          logTracking(trackingId, "pending-pickup");
 
           res.send({
             success: true,
@@ -496,7 +488,7 @@ async function run() {
     app.post("/riders", async (req, res) => {
       const rider = req.body;
       rider.status = "pending";
-      rider.createAt = new Date();
+      rider.createdAt = new Date();
 
       const result = await ridersCollection.insertOne(rider);
       res.send(result);
@@ -525,23 +517,20 @@ async function run() {
         };
         const userResult = await userCollection.updateOne(
           userQuery,
-          updateUser
+          updateUser,
         );
       }
 
       res.send(result);
     });
 
-
     // Tracking related Api
-    app.get('/trackings/:trackingId/logs', async (req, res) => {
+    app.get("/trackings/:trackingId/logs", async (req, res) => {
       const trackingId = req.params.trackingId;
       const query = { trackingId };
       const result = await trackingsCollection.find(query).toArray();
       res.send(result);
-    })
-
-
+    });
 
     /* await client.db("admin").command({ ping: 1 });
     console.log(
